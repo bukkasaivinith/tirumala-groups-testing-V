@@ -1,0 +1,318 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  format,
+  startOfMonth,
+  startOfWeek,
+  addDays,
+  subMonths,
+  addMonths,
+} from 'date-fns';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useTableMode } from '../../contexts/TableModeContext';
+import { supabaseDB } from '../../lib/supabaseDatabase';
+import { supabaseFinance } from '../../lib/supabaseFinance';
+
+interface CustomCalendarProps {
+  onDateSelect: (date: string) => void;
+  selectedDate?: string;
+  onClose?: () => void;
+  entries?: any[];
+  dotColor?: 'green' | 'red' | 'dark-red';
+  tooltipLabel?: string;
+  onMonthChange?: (month: number, year: number) => void;
+  className?: string;
+}
+
+const CustomCalendar = ({
+  onDateSelect,
+  selectedDate = '',
+  onClose,
+  entries: providedEntries,
+  dotColor = 'red',
+  tooltipLabel,
+  onMonthChange,
+  className,
+}: CustomCalendarProps) => {
+  const { mode: tableMode } = useTableMode();
+  const [currentMonth, setCurrentMonth] = useState(() => {
+    if (selectedDate) {
+      const d = new Date(selectedDate);
+      if (!isNaN(d.getTime())) {
+        return d;
+      }
+    }
+    return new Date();
+  });
+  const year = currentMonth.getFullYear();
+  const month = currentMonth.getMonth();
+
+  const [loadedEntries, setLoadedEntries] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  const entries = providedEntries ?? loadedEntries;
+
+  // Listen for dashboard refresh events to update indicators instantly
+  useEffect(() => {
+    const handleRefresh = () => {
+      setRefreshTrigger(prev => prev + 1);
+    };
+    window.addEventListener('dashboard-refresh', handleRefresh);
+    return () => window.removeEventListener('dashboard-refresh', handleRefresh);
+  }, []);
+
+  useEffect(() => {
+    if (providedEntries !== undefined && providedEntries !== null) return;
+
+    let isMounted = true;
+
+    const loadMonthEntries = async () => {
+      setLoading(true);
+      try {
+        let dateStrings: string[] = [];
+        if (tableMode === 'finance') {
+          const raw = await supabaseFinance.getAllFinanceEntryDates();
+          dateStrings = (raw || []).map((r: any) => typeof r === 'string' ? r : r.c_date || r.entry_date).filter(Boolean);
+        } else {
+          dateStrings = await supabaseDB.getCashBookEntryDatesForMonth(year, month + 1);
+        }
+        if (isMounted) {
+          setLoadedEntries(dateStrings.map(d => ({ c_date: d })));
+        }
+      } catch (e) {
+        console.error('Error loading month entries for calendar:', e);
+        if (isMounted) setLoadedEntries([]);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    loadMonthEntries();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [providedEntries, tableMode, year, month, refreshTrigger]);
+
+  const dateCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (!entries || entries.length === 0) return counts;
+
+    entries.forEach((entry: any) => {
+      if (!entry) return;
+      
+      let dateStr = '';
+      const rawDate = typeof entry === 'string' ? entry : entry.c_date || entry.entry_date;
+      
+      if (typeof rawDate === 'string') {
+        const dateMatch = rawDate.match(/^(\d{4}-\d{2}-\d{2})/);
+        if (dateMatch) {
+          dateStr = dateMatch[1];
+        } else {
+          const d = new Date(rawDate);
+          if (!isNaN(d.getTime())) {
+            dateStr = format(d, 'yyyy-MM-dd');
+          }
+        }
+      } else if (rawDate instanceof Date) {
+        dateStr = format(rawDate, 'yyyy-MM-dd');
+      }
+      
+      if (dateStr) {
+        counts[dateStr] = (counts[dateStr] || 0) + 1;
+      }
+    });
+
+    return counts;
+  }, [entries]);
+
+  const datesWithEntries = useMemo(() => {
+    return new Set<string>(Object.keys(dateCounts));
+  }, [dateCounts]);
+
+  const today = new Date();
+
+  const firstDay = startOfMonth(currentMonth);
+  const startDate = startOfWeek(firstDay);
+
+  const days: Date[] = [];
+  let cursor = new Date(startDate);
+  while (days.length < 42) {
+    days.push(new Date(cursor));
+    cursor = addDays(cursor, 1);
+  }
+
+  const monthNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+
+  const navigateMonth = (direction: 'prev' | 'next') => {
+    setCurrentMonth((prev) =>
+      direction === 'prev' ? subMonths(prev, 1) : addMonths(prev, 1),
+    );
+  };
+
+  useEffect(() => {
+    if (onMonthChange) {
+      onMonthChange(currentMonth.getMonth() + 1, currentMonth.getFullYear());
+    }
+  }, [currentMonth, onMonthChange]);
+
+  const handleDateClick = (date: Date) => {
+    const dateStr = format(date, 'yyyy-MM-dd');
+    onDateSelect(dateStr);
+    if (onClose) onClose();
+  };
+
+  const dotClass =
+    dotColor === 'green'
+      ? 'bg-green-500'
+      : dotColor === 'dark-red'
+      ? 'bg-red-800'
+      : 'bg-red-500';
+
+  const yearsList = useMemo(() => {
+    const list = [];
+    const currentYear = new Date().getFullYear();
+    for (let y = currentYear - 15; y <= currentYear + 10; y++) {
+      list.push(y);
+    }
+    return list;
+  }, []);
+
+  return (
+    <div className={`CustomCalendar bg-white border border-gray-300 rounded-lg shadow-lg p-4 min-w-[280px] ${className !== undefined ? className : 'absolute top-full left-0 mt-1 z-50'}`}>
+      <div className="flex items-center justify-between mb-4 gap-1">
+        <button
+          onClick={() => navigateMonth('prev')}
+          className="p-1 hover:bg-gray-100 rounded shrink-0"
+          type="button"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+        <div className="flex items-center gap-1">
+          <select
+            value={month}
+            onChange={(e) => setCurrentMonth(new Date(year, parseInt(e.target.value), 1))}
+            className="text-xs font-semibold bg-gray-50 border border-gray-200 rounded p-1 focus:outline-none"
+          >
+            {monthNames.map((name, idx) => (
+              <option key={idx} value={idx}>{name}</option>
+            ))}
+          </select>
+          <select
+            value={year}
+            onChange={(e) => setCurrentMonth(new Date(parseInt(e.target.value), month, 1))}
+            className="text-xs font-semibold bg-gray-50 border border-gray-200 rounded p-1 focus:outline-none"
+          >
+            {yearsList.map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          onClick={() => navigateMonth('next')}
+          className="p-1 hover:bg-gray-100 rounded shrink-0"
+          type="button"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 gap-1 text-xs">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+          <div key={day} className="p-2 text-center font-medium text-gray-500">
+            {day}
+          </div>
+        ))}
+
+        {days.map((date, index) => {
+          const dateStr = format(date, 'yyyy-MM-dd');
+          const isCurrentMonth = date.getMonth() === month;
+          const isToday = dateStr === format(today, 'yyyy-MM-dd');
+          const isSelected = dateStr === selectedDate;
+          const hasEntries = datesWithEntries.has(dateStr);
+
+          let bgClass = '';
+          if (isSelected) {
+            bgClass = 'bg-blue-500 text-white';
+          } else if (hasEntries && isCurrentMonth) {
+            bgClass = 'bg-blue-100 text-gray-700';
+          } else if (isToday) {
+            bgClass = 'bg-blue-200 font-bold';
+          }
+
+          const count = dateCounts[dateStr] || 0;
+          const label = tooltipLabel || (tableMode === 'finance' ? 'Entries' : 'Entries');
+          const titleText = count > 0 
+            ? `${format(date, 'dd-MMM-yyyy')}\n${count} ${label}`
+            : format(date, 'dd-MMM-yyyy');
+
+          return (
+            <button
+              key={`${dateStr}-${index}`}
+              onClick={() => handleDateClick(date)}
+              type="button"
+              title={titleText}
+              className={`
+                relative p-2 text-xs rounded transition-colors
+                ${!isCurrentMonth ? 'text-gray-300' : 'text-gray-700'}
+                ${bgClass}
+                ${!bgClass ? 'hover:bg-blue-50' : ''}
+              `}
+            >
+              <span className="relative z-0">{date.getDate()}</span>
+
+              {hasEntries && (
+                <div
+                  className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 w-2 h-2 rounded-full ${dotClass}`}
+                  style={{
+                    opacity: 1,
+                    pointerEvents: 'none',
+                    boxShadow: '0 0 2px rgba(0,0,0,0.6)',
+                  }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${dotClass}`} />
+          <span>Has entries</span>
+        </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            type="button"
+            className="px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded"
+          >
+            Close
+          </button>
+        )}
+      </div>
+
+      {loading && (
+        <div className="mt-2 text-xs text-gray-400 text-right">
+          Loading entry indicators...
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default CustomCalendar;
+
